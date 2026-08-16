@@ -3,7 +3,6 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   streamText,
-  toUIMessageStream,
   type UIMessage,
 } from "ai";
 import { sarvamChatModel } from "@/lib/server/sarvam-provider";
@@ -59,7 +58,7 @@ export async function POST(req: NextRequest) {
     Object.assign(latency, prepared.latency);
 
     const stream = createUIMessageStream({
-      execute: ({ writer }) => {
+      execute: async ({ writer }) => {
         prepared.passages.forEach((p, i) => {
           writer.write({
             type: "data-passage",
@@ -101,29 +100,49 @@ export async function POST(req: NextRequest) {
           model: sarvamChatModel,
           system: prepared.system,
           prompt: prepared.prompt,
-          onEnd: ({ text }) => {
-            latency.generation_ms = performance.now() - genT0;
-
-            const groundT0 = performance.now();
-            const finalized = finalizeGeneration(text, prepared.docs);
-            latency.grounding_guardrail_ms = performance.now() - groundT0;
-            latency.total_ms = sumExcludingGeneration(latency);
-
-            writer.write({
-              type: "data-guardrails",
-              id: "guardrails",
-              data: {
-                inputPassed: finalized.inputGuardrail.passed,
-                inputReason: finalized.inputGuardrail.reason,
-                groundingPassed: finalized.groundingGuardrail.passed,
-                groundingReason: finalized.groundingGuardrail.reason,
-              },
-            });
-            writer.write({ type: "data-latency", id: "latency", data: latency });
-          },
         });
 
-        writer.merge(toUIMessageStream({ stream: result.stream }));
+        // Consume result.textStream ourselves (instead of merging
+        // toUIMessageStream(result.stream)) so we control exactly when the
+        // message finalizes: writing data-guardrails/data-latency AFTER a
+        // model-level "finish" chunk has already gone out means the client
+        // (useChat) treats the message as already complete and drops them —
+        // this is what caused the answer text and latency dropdown to
+        // silently vanish. Writing everything before `execute()` resolves
+        // guarantees it lands inside the same message.
+        writer.write({ type: "text-start", id: "answer" });
+        let text = "";
+        try {
+          for await (const delta of result.textStream) {
+            text += delta;
+            writer.write({ type: "text-delta", id: "answer", delta });
+          }
+        } catch (e) {
+          writer.write({
+            type: "text-delta",
+            id: "answer",
+            delta: `\n\n(Generation failed: ${e})`,
+          });
+        }
+        writer.write({ type: "text-end", id: "answer" });
+
+        latency.generation_ms = performance.now() - genT0;
+        const groundT0 = performance.now();
+        const finalized = finalizeGeneration(text, prepared.docs);
+        latency.grounding_guardrail_ms = performance.now() - groundT0;
+        latency.total_ms = sumExcludingGeneration(latency);
+
+        writer.write({
+          type: "data-guardrails",
+          id: "guardrails",
+          data: {
+            inputPassed: finalized.inputGuardrail.passed,
+            inputReason: finalized.inputGuardrail.reason,
+            groundingPassed: finalized.groundingGuardrail.passed,
+            groundingReason: finalized.groundingGuardrail.reason,
+          },
+        });
+        writer.write({ type: "data-latency", id: "latency", data: latency });
       },
     });
 
