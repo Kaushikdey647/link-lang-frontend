@@ -14,15 +14,23 @@ export async function POST(req: NextRequest) {
   const chunkTypes: string[] | undefined = body?.chunk_types;
 
   let lang: string = body?.lang;
+  let lidMs = 0;
   try {
-    if (!lang) lang = await identifyLanguage(query);
+    if (!lang) {
+      const t0 = performance.now();
+      lang = await identifyLanguage(query);
+      lidMs = performance.now() - t0;
+    }
 
     const result = await ragInvoke(query, { lang, topK, chunkTypes });
+    const latency = lidMs
+      ? { lid_ms: lidMs, ...result.latency, total_ms: lidMs + (result.latency.total_ms ?? 0) }
+      : result.latency;
 
     return NextResponse.json({
       answer: result.answer,
       passages: result.passages,
-      latency: result.latency,
+      latency,
       guardrails: {
         input_passed: result.inputGuardrail.passed,
         input_reason: result.inputGuardrail.reason,

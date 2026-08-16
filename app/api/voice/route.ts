@@ -15,8 +15,11 @@ export async function POST(req: NextRequest) {
 
   let transcript: string;
   let lang: string;
+  let sttMs: number;
   try {
+    const t0 = performance.now();
     const result = await transcribe(audio);
+    sttMs = performance.now() - t0;
     transcript = result.transcript;
     lang = result.lang;
   } catch (e) {
@@ -29,13 +32,16 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await ragInvoke(transcript, { lang, topK });
+    // total_ms from ragInvoke only covers the RAG stages — recompute to
+    // include STT so the voice path's total is actually accurate end to end.
+    const latency = { stt_ms: sttMs, ...result.latency, total_ms: sttMs + (result.latency.total_ms ?? 0) };
 
     return NextResponse.json({
       transcript,
       detected_lang: lang,
       answer: result.answer,
       passages: result.passages,
-      latency: result.latency,
+      latency,
       guardrails: {
         input_passed: result.inputGuardrail.passed,
         input_reason: result.inputGuardrail.reason,

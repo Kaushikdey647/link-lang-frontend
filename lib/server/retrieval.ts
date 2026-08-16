@@ -24,6 +24,16 @@ export interface RetrievedDoc {
   metadata: Record<string, unknown>;
 }
 
+export interface RetrievalTiming {
+  translateMs: number;
+  qdrantQueryMs: number;
+}
+
+export interface RetrievalResult {
+  docs: RetrievedDoc[];
+  timing: RetrievalTiming;
+}
+
 function dedupe(hits: RetrievedDoc[], topK: number): RetrievedDoc[] {
   const seen = new Map<string, RetrievedDoc>();
   for (const doc of hits) {
@@ -48,12 +58,17 @@ export async function retrieve(
   lang: string,
   topK: number,
   chunkTypes: string[] = ["english_query"],
-): Promise<RetrievedDoc[]> {
+): Promise<RetrievalResult> {
   const client = getQdrantClient();
   const collection = await getLiveCollection();
+
+  let t0 = performance.now();
   const englishQuery = await translateToEnglish(query, lang);
+  const translateMs = performance.now() - t0;
+
   const qfilter = buildFilter(lang, chunkTypes);
 
+  t0 = performance.now();
   const result = await client.query(collection, {
     prefetch: [
       {
@@ -73,6 +88,7 @@ export async function retrieve(
     limit: topK * 4,
     with_payload: true,
   });
+  const qdrantQueryMs = performance.now() - t0;
 
   const docs: RetrievedDoc[] = result.points.map((p) => {
     const payload = (p.payload ?? {}) as Record<string, unknown>;
@@ -82,5 +98,5 @@ export async function retrieve(
     };
   });
 
-  return dedupe(docs, topK);
+  return { docs: dedupe(docs, topK), timing: { translateMs, qdrantQueryMs } };
 }

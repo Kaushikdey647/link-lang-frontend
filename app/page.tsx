@@ -9,7 +9,7 @@ import TextInput from "@/components/TextInput";
 import { useVoice } from "@/hooks/useVoice";
 import { useHealth } from "@/hooks/useHealth";
 import { queryText, queryVoice } from "@/lib/api";
-import type { Passage } from "@/lib/api";
+import type { Passage, Latency } from "@/lib/api";
 
 // ── State machine ────────────────────────────────────────────────────────────
 //
@@ -25,6 +25,7 @@ interface Result {
   answer: string;
   passages: Passage[];
   totalMs: number;
+  latency?: Latency;
 }
 
 const _fade = {
@@ -69,6 +70,7 @@ export default function Home() {
         answer: res.answer,
         passages: res.passages,
         totalMs: performance.now() - t0,
+        latency: res.latency,
       });
       setUiState("answered");
     } catch (e) {
@@ -117,7 +119,12 @@ export default function Home() {
     const t0 = performance.now();
     try {
       const res = await queryText(text);
-      setResult({ answer: res.answer, passages: res.passages, totalMs: performance.now() - t0 });
+      setResult({
+        answer: res.answer,
+        passages: res.passages,
+        totalMs: performance.now() - t0,
+        latency: res.latency,
+      });
       setUiState("answered");
     } catch (e) {
       setErrorMsg(String(e));
@@ -222,6 +229,7 @@ export default function Home() {
                 answer={result.answer}
                 passages={result.passages}
                 totalMs={result.totalMs}
+                latency={result.latency}
               />
             </motion.div>
           )}

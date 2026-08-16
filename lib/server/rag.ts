@@ -84,11 +84,15 @@ export async function ragInvoke(query: string, opts: RagOptions = {}): Promise<R
     };
   }
 
-  // 2. Retrieval
+  // 2. Retrieval — translate + Qdrant RRF query, timed separately so the UI
+  // can show a proper stage-by-stage breakdown instead of one opaque number.
   t0 = performance.now();
   let docs: RetrievedDoc[];
   try {
-    docs = await retrieve(query, lang, topK, chunkTypes);
+    const retrieval = await retrieve(query, lang, topK, chunkTypes);
+    docs = retrieval.docs;
+    latency.translate_ms = retrieval.timing.translateMs;
+    latency.qdrant_query_ms = retrieval.timing.qdrantQueryMs;
   } catch (e) {
     latency.retrieval_ms = performance.now() - t0;
     latency.total_ms = Object.values(latency).reduce((a, b) => a + b, 0);
@@ -178,5 +182,5 @@ export async function retrieveOnly(
   topK = 5,
   chunkTypes: string[] = ["english_query"],
 ): Promise<RetrievedDoc[]> {
-  return retrieve(query, lang, topK, chunkTypes);
+  return (await retrieve(query, lang, topK, chunkTypes)).docs;
 }
