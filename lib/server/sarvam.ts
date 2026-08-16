@@ -33,10 +33,36 @@ function to2Letter(bcp47: string | null | undefined): string {
   return (bcp47 || "hi-IN").split("-")[0];
 }
 
+// Sarvam's STT allow-list matches the base MIME type exactly — no codec
+// parameters. Browser MediaRecorders report e.g. "audio/webm;codecs=opus"
+// (Chrome/Firefox) or "audio/mp4;codecs=mp4a.40.2" (Safari), which Sarvam
+// rejects with a 400 even though the base type is allowed (confirmed against
+// a real deployment). Map base type -> a matching file extension so the
+// filename doesn't lie about the content either.
+const EXT_FOR_MIME: Record<string, string> = {
+  "audio/webm": "webm",
+  "audio/ogg": "ogg",
+  "audio/mp4": "mp4",
+  "audio/x-m4a": "m4a",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/aac": "aac",
+  "audio/x-aac": "aac",
+  "audio/flac": "flac",
+  "audio/x-flac": "flac",
+};
+
 /** Speech-to-text via Saaras v3, auto-detecting language. Max 30s audio (Sarvam's own limit). */
-export async function transcribe(audio: Blob, filename = "audio.wav"): Promise<TranscribeResult> {
+export async function transcribe(audio: Blob): Promise<TranscribeResult> {
+  const baseType = (audio.type || "audio/webm").split(";")[0].trim().toLowerCase();
+  const cleanAudio = audio.type === baseType ? audio : new Blob([audio], { type: baseType });
+  const ext = EXT_FOR_MIME[baseType] ?? "webm";
+
   const form = new FormData();
-  form.append("file", audio, filename);
+  form.append("file", cleanAudio, `recording.${ext}`);
   form.append("model", "saaras:v3");
   form.append("language_code", "unknown"); // triggers Sarvam's auto-LID, matches stt.py
 

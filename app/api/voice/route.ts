@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   let transcript: string;
   let lang: string;
   try {
-    const result = await transcribe(audio, "recording.webm");
+    const result = await transcribe(audio);
     transcript = result.transcript;
     lang = result.lang;
   } catch (e) {
