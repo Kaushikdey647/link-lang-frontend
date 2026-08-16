@@ -1,13 +1,18 @@
 import "server-only";
 import { retrieve, type RetrievedDoc } from "./retrieval";
-import { checkInput, checkGrounding, type GuardrailResult } from "./guardrails";
-import { chatCompletion } from "./sarvam";
+import { checkGrounding, type GuardrailResult } from "./guardrails";
+import { REFUSAL_PREFIX } from "@/lib/chat-types";
 
 /**
- * Port of pipeline/rag.py::RAGChain — same 4-stage harness (input guardrail
- * → retrieve → generate → grounding guardrail), same per-stage try/catch
- * (each stage fails closed into a structured response instead of throwing),
- * same per-stage latency timing.
+ * Port of pipeline/rag.py::RAGChain, restructured for AI-SDK streaming
+ * generation: this module handles retrieval + prompt prep (`prepareGeneration`)
+ * and post-stream grounding/refusal parsing (`finalizeGeneration`). The
+ * `streamText()` call itself lives in the route handler, which owns the
+ * `createUIMessageStream` writer that generation needs to be wired into.
+ *
+ * The input guardrail is no longer a separate stage — it's folded into the
+ * generation system prompt (a `REFUSED: <reason>` marker the model emits
+ * instead of an answer), eliminating a full extra Sarvam round-trip.
  */
 
 const LANG_NAMES: Record<string, string> = {
@@ -22,16 +27,10 @@ const SYSTEM_TEMPLATE = (langName: string) =>
   "You are given numbered context passages retrieved from a document corpus. " +
   "Answer the user's question using ONLY information present in the provided passages. " +
   `If the passages do not contain enough information to answer, say so clearly in ${langName}. ` +
-  "Keep your answer concise and grounded in the context.";
-
-export interface RagResponse {
-  answer: string;
-  passages: Array<{ text: string } & Record<string, unknown>>;
-  inputGuardrail: GuardrailResult;
-  groundingGuardrail: GuardrailResult;
-  latency: Record<string, number>; // step -> ms
-  error?: string;
-}
+  "Keep your answer concise and grounded in the context.\n\n" +
+  "Before answering, check the user's question. If it is harmful, abusive, or completely " +
+  `unrelated to information retrieval / question answering, respond with EXACTLY ` +
+  `"${REFUSAL_PREFIX} <short reason>" and nothing else.`;
 
 function formatContext(docs: RetrievedDoc[]): string {
   return docs
@@ -44,134 +43,94 @@ function formatContext(docs: RetrievedDoc[]): string {
     .join("\n\n");
 }
 
-function toPassages(docs: RetrievedDoc[]) {
+export interface Passage {
+  text: string;
+  [key: string]: unknown;
+}
+
+function toPassages(docs: RetrievedDoc[]): Passage[] {
   return docs.map((d) => ({ text: d.pageContent, ...d.metadata }));
 }
 
-export interface RagOptions {
+export interface PrepareOptions {
   lang?: string;
   topK?: number;
   chunkTypes?: string[];
-  reasoningEffort?: "low" | "medium" | "high";
 }
 
-export async function ragInvoke(query: string, opts: RagOptions = {}): Promise<RagResponse> {
+export interface PreparedGeneration {
+  system: string;
+  prompt: string;
+  docs: RetrievedDoc[];
+  passages: Passage[];
+  latency: Record<string, number>;
+}
+
+/** Retrieval + prompt prep. Passages empty => caller should skip generation
+ * entirely and use the canned "no passages" response (matches prior behavior,
+ * avoids paying for a Sarvam call with nothing to answer from). */
+export async function prepareGeneration(
+  query: string,
+  opts: PrepareOptions = {},
+): Promise<PreparedGeneration> {
   const lang = opts.lang ?? "hi";
   const topK = opts.topK ?? 5;
   const chunkTypes = opts.chunkTypes ?? ["english_query"];
-  const reasoningEffort = opts.reasoningEffort ?? "low";
+  const langName = LANG_NAMES[lang] ?? lang;
+  const system = SYSTEM_TEMPLATE(langName);
 
-  const latency: Record<string, number> = {};
-
-  // 1. Input guardrail — fails closed rather than propagating, since an
-  // unhandled error here would otherwise skip safety screening entirely.
-  let t0 = performance.now();
-  let inputResult: GuardrailResult;
-  try {
-    inputResult = await checkInput(query);
-  } catch (e) {
-    inputResult = { passed: false, reason: `Input guardrail check failed: ${e}` };
-  }
-  latency.input_guardrail_ms = performance.now() - t0;
-
-  if (!inputResult.passed) {
-    return {
-      answer: `I cannot answer this query. ${inputResult.reason}`,
-      passages: [],
-      inputGuardrail: inputResult,
-      groundingGuardrail: { passed: true, reason: "" },
-      latency,
-    };
-  }
-
-  // 2. Retrieval — translate + Qdrant RRF query, timed separately so the UI
-  // can show a proper stage-by-stage breakdown instead of one opaque number.
-  t0 = performance.now();
-  let docs: RetrievedDoc[];
-  try {
-    const retrieval = await retrieve(query, lang, topK, chunkTypes);
-    docs = retrieval.docs;
-    latency.translate_ms = retrieval.timing.translateMs;
-    latency.qdrant_query_ms = retrieval.timing.qdrantQueryMs;
-  } catch (e) {
-    latency.retrieval_ms = performance.now() - t0;
-    latency.total_ms = Object.values(latency).reduce((a, b) => a + b, 0);
-    return {
-      answer: "I ran into an error trying to retrieve context for this question — please try again.",
-      passages: [],
-      inputGuardrail: inputResult,
-      groundingGuardrail: { passed: false, reason: "Retrieval failed." },
-      latency,
-      error: `retrieval_error: ${e}`,
-    };
-  }
-  latency.retrieval_ms = performance.now() - t0;
+  const retrieval = await retrieve(query, lang, topK, chunkTypes);
+  const latency: Record<string, number> = {
+    translate_ms: retrieval.timing.translateMs,
+    qdrant_query_ms: retrieval.timing.qdrantQueryMs,
+  };
+  const docs = retrieval.docs;
 
   if (docs.length === 0) {
+    return { system, prompt: "", docs, passages: [], latency };
+  }
+
+  return {
+    system,
+    prompt: `Context passages:\n${formatContext(docs)}\n\nQuestion: ${query}`,
+    docs,
+    passages: toPassages(docs),
+    latency,
+  };
+}
+
+export interface FinalizedGeneration {
+  inputGuardrail: GuardrailResult;
+  groundingGuardrail: GuardrailResult;
+}
+
+/** Post-processes the fully-streamed generation text: parses the folded-in
+ * refusal marker, otherwise runs the lexical grounding check. Called once the
+ * client-visible stream has finished (grounding needs the complete answer —
+ * it can't be checked against a partial stream).
+ *
+ * Note: this does NOT rewrite the already-streamed text — the raw model
+ * output (including a `REFUSED:` marker, if present) is what the client
+ * received token-by-token. The client is responsible for presenting a
+ * refusal/ungrounded-answer notice based on these flags. */
+export function finalizeGeneration(text: string, docs: RetrievedDoc[]): FinalizedGeneration {
+  if (text.startsWith(REFUSAL_PREFIX)) {
+    const reason = text.slice(REFUSAL_PREFIX.length).trim() || "Query flagged as unsafe or off-topic.";
     return {
-      answer: "No relevant passages found in the corpus.",
-      passages: [],
-      inputGuardrail: inputResult,
-      groundingGuardrail: { passed: false, reason: "No passages retrieved." },
-      latency,
+      inputGuardrail: { passed: false, reason },
+      groundingGuardrail: { passed: true, reason: "" },
     };
   }
 
-  // 3. Generation
-  const context = formatContext(docs);
-  const langName = LANG_NAMES[lang] ?? lang;
-  t0 = performance.now();
-  let answer: string;
-  try {
-    answer = await chatCompletion(
-      [
-        { role: "system", content: SYSTEM_TEMPLATE(langName) },
-        { role: "user", content: `Context passages:\n${context}\n\nQuestion: ${query}` },
-      ],
-      { maxTokens: 2048, reasoningEffort },
-    );
-  } catch (e) {
-    latency.generation_ms = performance.now() - t0;
-    latency.total_ms = Object.values(latency).reduce((a, b) => a + b, 0);
-    return {
-      answer: "I ran into an error trying to generate an answer for this question — please try again.",
-      passages: toPassages(docs),
-      inputGuardrail: inputResult,
-      groundingGuardrail: { passed: false, reason: "Generation failed." },
-      latency,
-      error: `generation_error: ${e}`,
-    };
-  }
-  latency.generation_ms = performance.now() - t0;
-
-  // 4. Grounding guardrail — check against the full parent texts used for
-  // generation. Fails closed rather than propagating, so a transient error
-  // doesn't discard an already-generated answer.
-  t0 = performance.now();
   const passageTexts = docs.map((d) => (d.metadata.parent_passage as string) || d.pageContent);
   let groundingResult: GuardrailResult;
   try {
-    groundingResult = checkGrounding(answer, passageTexts);
+    groundingResult = checkGrounding(text, passageTexts);
   } catch (e) {
     groundingResult = { passed: false, reason: `Grounding check failed: ${e}` };
   }
-  latency.grounding_guardrail_ms = performance.now() - t0;
 
-  if (!groundingResult.passed) {
-    answer =
-      "I don't have sufficient grounded information to answer this question reliably. " +
-      `(${groundingResult.reason})`;
-  }
-
-  latency.total_ms = Object.values(latency).reduce((a, b) => a + b, 0);
-
-  return {
-    answer,
-    passages: toPassages(docs),
-    inputGuardrail: inputResult,
-    groundingGuardrail: groundingResult,
-    latency,
-  };
+  return { inputGuardrail: { passed: true, reason: "" }, groundingGuardrail: groundingResult };
 }
 
 /** Retrieval-only path — the sub-pipeline PROBLEM-STATEMENT.md's <200ms

@@ -3,14 +3,16 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { ChevronDown, ChevronUp, Clock } from "lucide-react";
-import type { Passage, Latency } from "@/lib/api";
+import { REFUSAL_PREFIX } from "@/lib/chat-types";
+import type { PassageData, GuardrailsData, LatencyData } from "@/lib/chat-types";
 
 interface Props {
   transcript?: string;
   answer: string;
-  passages: Passage[];
-  totalMs?: number;
-  latency?: Latency;
+  passages: PassageData[];
+  guardrails?: GuardrailsData;
+  latency?: LatencyData;
+  streaming?: boolean;
 }
 
 function fmtDuration(ms: number): string {
@@ -18,21 +20,36 @@ function fmtDuration(ms: number): string {
 }
 
 // Fixed display order — only stages actually present in `latency` render.
-const STAGE_LABELS: Array<[key: keyof Latency, label: string]> = [
+// generation_ms is shown for information but excluded from "Total (server)":
+// it streams to the client and is no longer counted as blocking latency.
+const STAGE_LABELS: Array<[key: keyof LatencyData, label: string]> = [
   ["stt_ms", "Speech-to-text"],
   ["lid_ms", "Language detection"],
-  ["input_guardrail_ms", "Input guardrail"],
   ["translate_ms", "Translate (Sarvam)"],
   ["qdrant_query_ms", "Qdrant retrieval (RRF)"],
-  ["generation_ms", "Generation (Sarvam-105B)"],
+  ["generation_ms", "Generation (Sarvam-105B, streamed)"],
   ["grounding_guardrail_ms", "Grounding guardrail"],
 ];
 
-export default function AnswerDisplay({ transcript, answer, passages, totalMs, latency }: Props) {
+export default function AnswerDisplay({
+  transcript,
+  answer,
+  passages,
+  guardrails,
+  latency,
+  streaming,
+}: Props) {
   const [showSources, setShowSources] = useState(false);
   const [showLatency, setShowLatency] = useState(false);
 
   const stages = STAGE_LABELS.filter(([key]) => latency?.[key] !== undefined);
+  const totalMs = latency?.total_ms;
+
+  const refused = answer.startsWith(REFUSAL_PREFIX);
+  const displayAnswer = refused
+    ? `I cannot answer this query. ${answer.slice(REFUSAL_PREFIX.length).trim()}`
+    : answer;
+  const showGroundingCaveat = !refused && guardrails && !guardrails.groundingPassed;
 
   return (
     <motion.div
@@ -50,7 +67,16 @@ export default function AnswerDisplay({ transcript, answer, passages, totalMs, l
 
       {/* Answer */}
       <div className="rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm px-6 py-5">
-        <p className="text-white/90 text-base leading-relaxed whitespace-pre-wrap">{answer}</p>
+        <p className="text-white/90 text-base leading-relaxed whitespace-pre-wrap">
+          {displayAnswer}
+          {streaming && <span className="inline-block w-1.5 h-4 ml-0.5 bg-white/50 animate-pulse align-text-bottom" />}
+        </p>
+        {showGroundingCaveat && (
+          <p className="mt-3 text-xs text-amber-400/70 border-t border-white/8 pt-2">
+            This answer may not be fully grounded in the retrieved passages.
+            {guardrails?.groundingReason ? ` (${guardrails.groundingReason})` : ""}
+          </p>
+        )}
       </div>
 
       {/* Timing + sources + latency-breakdown toggles */}
@@ -99,9 +125,9 @@ export default function AnswerDisplay({ transcript, answer, passages, totalMs, l
                   </div>
                 ))}
                 <div className="flex items-center justify-between text-xs pt-1.5 mt-1 border-t border-white/8">
-                  <span className="text-white/50 font-medium">Total (server)</span>
+                  <span className="text-white/50 font-medium">Total (server, excl. generation)</span>
                   <span className="text-white/70 font-mono font-medium">
-                    {fmtDuration(latency?.total_ms ?? 0)}
+                    {fmtDuration(totalMs ?? 0)}
                   </span>
                 </div>
               </div>
@@ -115,13 +141,13 @@ export default function AnswerDisplay({ transcript, answer, passages, totalMs, l
               transition={{ duration: 0.2 }}
               className="overflow-hidden mt-3 flex flex-col gap-2"
             >
-              {passages.map((p, i) => (
+              {passages.map((p) => (
                 <div
-                  key={p.passage_id + i}
+                  key={p.passageId ?? p.index}
                   className="rounded-xl border border-white/8 bg-white/3 px-4 py-3 text-xs text-white/50 leading-relaxed"
                 >
-                  <span className="text-white/25 font-mono mr-2">[{i + 1}]</span>
-                  {p.is_selected && <span className="mr-2 text-white/40">★</span>}
+                  <span className="text-white/25 font-mono mr-2">[{p.index + 1}]</span>
+                  {p.isSelected && <span className="mr-2 text-white/40">★</span>}
                   {p.text}
                 </div>
               ))}

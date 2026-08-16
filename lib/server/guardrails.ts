@@ -1,36 +1,15 @@
 import "server-only";
-import { chatCompletion } from "./sarvam";
 
 /**
  * Port of pipeline/guardrails.py — no embedding calls (matches the Python
- * rewrite: input guardrail is LLM-only, grounding is lexical token-overlap).
+ * rewrite: grounding is lexical token-overlap). The input safety/relevance
+ * check is no longer a separate stage here — it's folded into the generation
+ * system prompt (see lib/server/rag.ts's REFUSAL_PREFIX).
  */
 
 export interface GuardrailResult {
   passed: boolean;
   reason: string;
-}
-
-/** LLM-based safety/relevance check — rejects harmful, abusive, or off-topic queries. */
-export async function checkInput(query: string): Promise<GuardrailResult> {
-  const content = await chatCompletion(
-    [
-      {
-        role: "system",
-        content:
-          "You are a safety and relevance filter. Reply with only 'SAFE' or 'UNSAFE'.\n" +
-          "Mark UNSAFE if the query is harmful, abusive, or completely unrelated " +
-          "to information retrieval / question answering.",
-      },
-      { role: "user", content: query },
-    ],
-    { maxTokens: 50, reasoningEffort: "low" },
-  );
-  const verdict = content.trim().toUpperCase();
-  if (verdict.includes("UNSAFE")) {
-    return { passed: false, reason: "Query flagged as unsafe or off-topic." };
-  }
-  return { passed: true, reason: "" };
 }
 
 // Fraction of an answer sentence's content words that must appear somewhere

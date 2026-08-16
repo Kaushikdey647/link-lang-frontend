@@ -2,31 +2,24 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 import MicButton from "@/components/MicButton";
 import WaveformBars from "@/components/WaveformBars";
 import AnswerDisplay from "@/components/AnswerDisplay";
 import TextInput from "@/components/TextInput";
 import { useVoice } from "@/hooks/useVoice";
 import { useHealth } from "@/hooks/useHealth";
-import { queryText, queryVoice } from "@/lib/api";
-import type { Passage, Latency } from "@/lib/api";
+import { transcribeVoice } from "@/lib/api";
+import type { MyUIMessage, PassageData, GuardrailsData, LatencyData } from "@/lib/chat-types";
 
 // ── State machine ────────────────────────────────────────────────────────────
 //
-//   idle → recording → processing → answered
-//                                 └→ error
+//   idle → recording → processing (transcribing → streaming) → answered
+//                                                             └→ error
 //   (any) → recording  (tap mic again)
 //
 type UIState = "idle" | "recording" | "processing" | "answered" | "error";
-
-interface Result {
-  transcript?: string;
-  detectedLang?: string;
-  answer: string;
-  passages: Passage[];
-  totalMs: number;
-  latency?: Latency;
-}
 
 const _fade = {
   initial:    { opacity: 0, y: 8 },
@@ -47,37 +40,77 @@ function fmtTime(s: number) {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
+function partsOfType<T>(message: MyUIMessage | undefined, type: string): T[] {
+  if (!message) return [];
+  return message.parts
+    .filter((p) => p.type === type)
+    .map((p) => (p as unknown as { data: T }).data);
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [uiState,  setUiState]  = useState<UIState>("idle");
-  const [result,   setResult]   = useState<Result | null>(null);
+  const [uiState, setUiState] = useState<UIState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
-  const [seconds,  setSeconds]  = useState(0);
+  const [seconds, setSeconds] = useState(0);
   const [showText, setShowText] = useState(false);
+  const [transcript, setTranscript] = useState<string | undefined>();
+  const [detectedLang, setDetectedLang] = useState<string | undefined>();
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { messages, sendMessage, status, error, setMessages } = useChat<MyUIMessage>({
+    transport: new DefaultChatTransport({ api: "/api/query" }),
+  });
+
+  const assistantMessage = messages.find((m) => m.role === "assistant");
+  const answerText = (assistantMessage?.parts ?? [])
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+  const passages = partsOfType<PassageData>(assistantMessage, "data-passage").sort(
+    (a, b) => a.index - b.index,
+  );
+  const guardrails = partsOfType<GuardrailsData>(assistantMessage, "data-guardrails")[0];
+  const latency = partsOfType<LatencyData>(assistantMessage, "data-latency")[0];
+
+  // ── Drive uiState off useChat's status + local recording/transcribing state ─
+
+  const [isTranscribing, setIsTranscribing] = useState(false);
+
+  useEffect(() => {
+    if (isTranscribing || status === "submitted" || status === "streaming") {
+      setUiState("processing");
+    } else if (status === "error" && error) {
+      setErrorMsg(String(error.message ?? error));
+      setUiState("error");
+    } else if (status === "ready" && assistantMessage) {
+      setUiState("answered");
+    }
+  }, [isTranscribing, status, error, assistantMessage]);
 
   // ── Voice result callback ─────────────────────────────────────────────────
 
-  const handleVoiceResult = useCallback(async (blob: Blob) => {
-    setUiState("processing");
-    const t0 = performance.now();
-    try {
-      const res = await queryVoice(blob);
-      setResult({
-        transcript: res.transcript,
-        detectedLang: res.detected_lang,
-        answer: res.answer,
-        passages: res.passages,
-        totalMs: performance.now() - t0,
-        latency: res.latency,
-      });
-      setUiState("answered");
-    } catch (e) {
-      setErrorMsg(String(e));
-      setUiState("error");
-    }
-  }, []);
+  const handleVoiceResult = useCallback(
+    async (blob: Blob) => {
+      setMessages([]);
+      setTranscript(undefined);
+      setDetectedLang(undefined);
+      setErrorMsg("");
+      setIsTranscribing(true);
+      try {
+        const { transcript: t, lang, sttMs } = await transcribeVoice(blob);
+        setTranscript(t);
+        setDetectedLang(lang);
+        setIsTranscribing(false);
+        sendMessage({ text: t }, { body: { lang, sttMs } });
+      } catch (e) {
+        setErrorMsg(String(e));
+        setIsTranscribing(false);
+        setUiState("error");
+      }
+    },
+    [sendMessage, setMessages],
+  );
 
   const voice = useVoice(handleVoiceResult);
 
@@ -100,7 +133,6 @@ export default function Home() {
     if (uiState === "recording") {
       voice.stop();   // → mr.onstop → handleVoiceResult → "processing"
     } else {
-      setResult(null);
       setErrorMsg("");
       setUiState("recording");
       try {
@@ -112,31 +144,24 @@ export default function Home() {
     }
   }, [uiState, voice]);
 
-  const handleText = useCallback(async (text: string) => {
-    setShowText(false);
-    setUiState("processing");
-    setResult(null);
-    const t0 = performance.now();
-    try {
-      const res = await queryText(text);
-      setResult({
-        answer: res.answer,
-        passages: res.passages,
-        totalMs: performance.now() - t0,
-        latency: res.latency,
-      });
-      setUiState("answered");
-    } catch (e) {
-      setErrorMsg(String(e));
-      setUiState("error");
-    }
-  }, []);
+  const handleText = useCallback(
+    (text: string) => {
+      setShowText(false);
+      setMessages([]);
+      setTranscript(undefined);
+      setDetectedLang(undefined);
+      setErrorMsg("");
+      sendMessage({ text });
+    },
+    [sendMessage, setMessages],
+  );
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const health       = useHealth();
   const isRecording  = uiState === "recording";
   const isProcessing = uiState === "processing";
+  const isStreaming  = status === "streaming";
   const backendReady = health === "ready";
 
   return (
@@ -166,7 +191,7 @@ export default function Home() {
 
         {/* Detected language badge — shows after a voice answer */}
         <AnimatePresence>
-          {result?.detectedLang && (
+          {detectedLang && (
             <motion.div
               key="lang-badge"
               initial={{ opacity: 0, scale: 0.9 }}
@@ -174,7 +199,7 @@ export default function Home() {
               exit={{ opacity: 0, scale: 0.9 }}
               className="text-xs text-white/30 bg-white/5 border border-white/10 rounded-full px-3 py-1 tracking-wide"
             >
-              {LANG_NAMES[result.detectedLang] ?? result.detectedLang}
+              {LANG_NAMES[detectedLang] ?? detectedLang}
             </motion.div>
           )}
         </AnimatePresence>
@@ -213,23 +238,24 @@ export default function Home() {
             </motion.div>
           )}
 
-          {/* processing */}
-          {uiState === "processing" && (
+          {/* processing (transcribing, before any streamed text has arrived) */}
+          {uiState === "processing" && !answerText && (
             <motion.div key="processing" {..._fade} className="flex flex-col items-center gap-4">
               <WaveformBars bars={11} active={true} />
               <p className="text-white/40 text-sm tracking-widest">One moment…</p>
             </motion.div>
           )}
 
-          {/* answered */}
-          {uiState === "answered" && result && (
+          {/* answered — also covers mid-stream once the first token arrives */}
+          {(uiState === "answered" || (uiState === "processing" && answerText)) && (
             <motion.div key="answered" {..._fade} className="w-full">
               <AnswerDisplay
-                transcript={result.transcript}
-                answer={result.answer}
-                passages={result.passages}
-                totalMs={result.totalMs}
-                latency={result.latency}
+                transcript={transcript}
+                answer={answerText}
+                passages={passages}
+                guardrails={guardrails}
+                latency={latency}
+                streaming={isStreaming}
               />
             </motion.div>
           )}

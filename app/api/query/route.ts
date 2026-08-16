@@ -1,47 +1,137 @@
-import { NextRequest, NextResponse } from "next/server";
-import { ragInvoke } from "@/lib/server/rag";
+import { NextRequest } from "next/server";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  streamText,
+  toUIMessageStream,
+  type UIMessage,
+} from "ai";
+import { sarvamChatModel } from "@/lib/server/sarvam-provider";
+import { prepareGeneration, finalizeGeneration } from "@/lib/server/rag";
 import { identifyLanguage } from "@/lib/server/sarvam";
 
-/** Port of POST /query (api/routes/query.py). */
+/** Streaming port of POST /query. Body: `{ messages, lang?, topK?, chunkTypes? }`
+ * — the shape @ai-sdk/react's useChat sends (messages) plus our own custom
+ * per-request fields (lang/topK/chunkTypes) passed via sendMessage's second arg. */
+
+function lastUserText(messages: UIMessage[]): string {
+  const last = messages[messages.length - 1];
+  return (last?.parts ?? [])
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+}
+
+function sumExcludingGeneration(latency: Record<string, number>): number {
+  return Object.entries(latency)
+    .filter(([key]) => key !== "generation_ms" && key !== "total_ms")
+    .reduce((a, [, v]) => a + v, 0);
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
-  const query: string | undefined = body?.query;
-  if (!query || !query.trim()) {
-    return NextResponse.json({ detail: "query must not be empty" }, { status: 400 });
+  const messages: UIMessage[] = body?.messages ?? [];
+  const query = lastUserText(messages).trim();
+
+  if (!query) {
+    return new Response(JSON.stringify({ detail: "query must not be empty" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
-  const topK: number = body?.top_k ?? 5;
-  const chunkTypes: string[] | undefined = body?.chunk_types;
+  const topK: number = body?.topK ?? 5;
+  const chunkTypes: string[] | undefined = body?.chunkTypes;
+  let lang: string | undefined = body?.lang;
+  const latency: Record<string, number> = {};
+  // Voice path times STT client-side (before this request even starts) and
+  // passes it through so the server-computed total stays end-to-end accurate.
+  if (typeof body?.sttMs === "number") latency.stt_ms = body.sttMs;
 
-  let lang: string = body?.lang;
-  let lidMs = 0;
   try {
     if (!lang) {
       const t0 = performance.now();
       lang = await identifyLanguage(query);
-      lidMs = performance.now() - t0;
+      latency.lid_ms = performance.now() - t0;
     }
 
-    const result = await ragInvoke(query, { lang, topK, chunkTypes });
-    const latency = lidMs
-      ? { lid_ms: lidMs, ...result.latency, total_ms: lidMs + (result.latency.total_ms ?? 0) }
-      : result.latency;
+    const prepared = await prepareGeneration(query, { lang, topK, chunkTypes });
+    Object.assign(latency, prepared.latency);
 
-    return NextResponse.json({
-      answer: result.answer,
-      passages: result.passages,
-      latency,
-      guardrails: {
-        input_passed: result.inputGuardrail.passed,
-        input_reason: result.inputGuardrail.reason,
-        grounding_passed: result.groundingGuardrail.passed,
-        grounding_reason: result.groundingGuardrail.reason,
+    const stream = createUIMessageStream({
+      execute: ({ writer }) => {
+        prepared.passages.forEach((p, i) => {
+          writer.write({
+            type: "data-passage",
+            id: `passage-${i}`,
+            data: {
+              index: i,
+              text: p.text,
+              passageId: (p as Record<string, unknown>).passage_id as string | undefined,
+              isSelected: Boolean((p as Record<string, unknown>).is_selected),
+            },
+          });
+        });
+
+        if (prepared.docs.length === 0) {
+          latency.total_ms = sumExcludingGeneration(latency);
+          writer.write({
+            type: "data-guardrails",
+            id: "guardrails",
+            data: {
+              inputPassed: true,
+              inputReason: "",
+              groundingPassed: false,
+              groundingReason: "No passages retrieved.",
+            },
+          });
+          writer.write({ type: "data-latency", id: "latency", data: latency });
+          writer.write({ type: "text-start", id: "answer" });
+          writer.write({
+            type: "text-delta",
+            id: "answer",
+            delta: "No relevant passages found in the corpus.",
+          });
+          writer.write({ type: "text-end", id: "answer" });
+          return;
+        }
+
+        const genT0 = performance.now();
+        const result = streamText({
+          model: sarvamChatModel,
+          system: prepared.system,
+          prompt: prepared.prompt,
+          onEnd: ({ text }) => {
+            latency.generation_ms = performance.now() - genT0;
+
+            const groundT0 = performance.now();
+            const finalized = finalizeGeneration(text, prepared.docs);
+            latency.grounding_guardrail_ms = performance.now() - groundT0;
+            latency.total_ms = sumExcludingGeneration(latency);
+
+            writer.write({
+              type: "data-guardrails",
+              id: "guardrails",
+              data: {
+                inputPassed: finalized.inputGuardrail.passed,
+                inputReason: finalized.inputGuardrail.reason,
+                groundingPassed: finalized.groundingGuardrail.passed,
+                groundingReason: finalized.groundingGuardrail.reason,
+              },
+            });
+            writer.write({ type: "data-latency", id: "latency", data: latency });
+          },
+        });
+
+        writer.merge(toUIMessageStream({ stream: result.stream }));
       },
     });
+
+    return createUIMessageStreamResponse({ stream });
   } catch (e) {
-    return NextResponse.json(
-      { detail: `Query pipeline unavailable: ${e}` },
-      { status: 503 },
-    );
+    return new Response(JSON.stringify({ detail: `Query pipeline unavailable: ${e}` }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }

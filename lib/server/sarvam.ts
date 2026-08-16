@@ -1,14 +1,12 @@
 import "server-only";
 
 /**
- * Thin fetch wrappers around Sarvam's REST API — ports stt.py, the translate
- * call in pipeline/query_engines.py, and the ChatSarvam usage in
- * pipeline/rag.py / pipeline/guardrails.py. Contracts confirmed directly
+ * Thin fetch wrappers around Sarvam's REST API — ports stt.py and the
+ * translate call in pipeline/query_engines.py. Contracts confirmed directly
  * against docs.sarvam.ai (not guessed) — see CHANGELOG.md.
  *
- * Note: STT/translate/language-ID use the `api-subscription-key` header;
- * chat completions uses `Authorization: Bearer` — this isn't a mistake,
- * it's what each endpoint's own reference page documents.
+ * Chat completions (generation) go through the AI SDK Sarvam provider
+ * instead (./sarvam-provider.ts) — see lib/server/rag.ts.
  */
 
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY || "";
@@ -121,34 +119,6 @@ export async function translateToEnglish(text: string, lang: string): Promise<st
   return data.translated_text ?? text;
 }
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-export interface ChatCompletionOptions {
-  maxTokens?: number;
-  reasoningEffort?: "low" | "medium" | "high";
-}
-
-/** Sarvam-105B chat completion — used for both generation and the guardrail safety check. */
-export async function chatCompletion(
-  messages: ChatMessage[],
-  opts: ChatCompletionOptions = {},
-): Promise<string> {
-  const res = await sarvamFetch("/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${SARVAM_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "sarvam-105b",
-      messages,
-      max_tokens: opts.maxTokens ?? 2048,
-      reasoning_effort: opts.reasoningEffort ?? "low",
-    }),
-  });
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? "";
-}
+// Chat completions (generation) now go through the AI SDK Sarvam provider
+// (./sarvam-provider.ts) via streamText, not this module's manual fetch —
+// see lib/server/rag.ts + app/api/query/route.ts.
