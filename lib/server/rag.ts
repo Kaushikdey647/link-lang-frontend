@@ -35,8 +35,8 @@ const SYSTEM_TEMPLATE = (langName: string) =>
 function formatContext(docs: RetrievedDoc[]): string {
   return docs
     .map((d, i) => {
-      // english_query chunks embed the English question but return the
-      // vernacular passage (parent_passage) as LLM context.
+      // qa_pair embeds "query + passage"; LLM context is the vernacular
+      // passage stored in parent_passage.
       const text = (d.metadata.parent_passage as string) || d.pageContent;
       return `[${i + 1}] ${text}`;
     })
@@ -49,7 +49,10 @@ export interface Passage {
 }
 
 function toPassages(docs: RetrievedDoc[]): Passage[] {
-  return docs.map((d) => ({ text: d.pageContent, ...d.metadata }));
+  return docs.map((d) => ({
+    text: (d.metadata.parent_passage as string) || d.pageContent,
+    ...d.metadata,
+  }));
 }
 
 export interface PrepareOptions {
@@ -75,13 +78,12 @@ export async function prepareGeneration(
 ): Promise<PreparedGeneration> {
   const lang = opts.lang ?? "hi";
   const topK = opts.topK ?? 5;
-  const chunkTypes = opts.chunkTypes ?? ["english_query"];
+  const chunkTypes = opts.chunkTypes ?? ["qa_pair"];
   const langName = LANG_NAMES[lang] ?? lang;
   const system = SYSTEM_TEMPLATE(langName);
 
   const retrieval = await retrieve(query, lang, topK, chunkTypes);
   const latency: Record<string, number> = {
-    translate_ms: retrieval.timing.translateMs,
     qdrant_query_ms: retrieval.timing.qdrantQueryMs,
   };
   const docs = retrieval.docs;
@@ -139,7 +141,7 @@ export async function retrieveOnly(
   query: string,
   lang = "hi",
   topK = 5,
-  chunkTypes: string[] = ["english_query"],
+  chunkTypes: string[] = ["qa_pair"],
 ): Promise<RetrievedDoc[]> {
   return (await retrieve(query, lang, topK, chunkTypes)).docs;
 }

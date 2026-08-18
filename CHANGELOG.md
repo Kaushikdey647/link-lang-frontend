@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed — serving uses multilingual-e5-small + qa_pair retrieval
+- `lib/server/retrieval.ts` now dense-queries the vernacular text with `query: ` prefix against `intfloat/multilingual-e5-small` (Qdrant Cloud inference). English-pivot MiniLM+BM25 RRF and the Sarvam translate hop are gone from the serving path.
+- Defaults: `chunkTypes=["qa_pair"]`, collection `msmarco_xi__multilingual_e5_small__qa_pair__train` (`QDRANT_COLLECTION_NAME`), model `QDRANT_EMBEDDING_MODEL`. Citations/LLM context still use `parent_passage`.
+
 ### Changed — Streamed generation via Vercel AI SDK, guardrail folded into the system prompt
 Real production numbers (STT 1.8s, input guardrail 906ms, translate 381ms, Qdrant retrieval 665ms, generation 7.9s, grounding 3ms) showed generation dominating end-to-end latency, ~94% of it Sarvam-API-bound. Three changes address this:
 - **`reasoning_effort` forced to `null` on every generation call.** New `lib/server/sarvam-provider.ts` wraps Sarvam's OpenAI-compatible chat-completions endpoint with `@ai-sdk/openai-compatible`'s `createOpenAICompatible`, using `transformRequestBody` to inject `reasoning_effort: null` regardless of what's passed in — disables Sarvam's reasoning step, the single largest latency contributor.

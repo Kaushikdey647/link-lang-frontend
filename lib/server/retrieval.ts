@@ -2,21 +2,16 @@ import "server-only";
 import {
   getQdrantClient,
   getLiveCollection,
-  MINILM_INFERENCE_MODEL,
-  BM25_INFERENCE_MODEL,
-  SPARSE_VECTOR_NAME,
+  DENSE_INFERENCE_MODEL,
 } from "./qdrant";
-import { translateToEnglish } from "./sarvam";
 
 /**
- * Port of pipeline/query_engines.py::EnglishPivotQueryEngine — RRF fusion of:
- *   - dense: English-translated query vs. english_query embeddings
- *   - sparse (BM25/IDF): original vernacular query vs. parent_passage text
+ * Dense-only retrieval against qa_pair chunks embedded with
+ * intfloat/multilingual-e5-small (Qdrant Cloud inference).
  *
- * Both vectors are computed server-side by Qdrant Cloud inference
- * ({text, model} in place of a raw vector) — no local model inference. The
- * vernacular query is never discarded from the caller's perspective — only
- * the dense prefetch sees the English-translated version.
+ * Index time prefixes documents with "passage: " (pipeline/indexer.py::_e5_text).
+ * Query time must prefix with "query: " — e5 is trained on that asymmetry.
+ * No English pivot / BM25: the collection is vernacular dense-only.
  */
 
 export interface RetrievedDoc {
@@ -25,13 +20,16 @@ export interface RetrievedDoc {
 }
 
 export interface RetrievalTiming {
-  translateMs: number;
   qdrantQueryMs: number;
 }
 
 export interface RetrievalResult {
   docs: RetrievedDoc[];
   timing: RetrievalTiming;
+}
+
+function e5QueryText(query: string): string {
+  return `query: ${query}`;
 }
 
 function dedupe(hits: RetrievedDoc[], topK: number): RetrievedDoc[] {
@@ -57,34 +55,16 @@ export async function retrieve(
   query: string,
   lang: string,
   topK: number,
-  chunkTypes: string[] = ["english_query"],
+  chunkTypes: string[] = ["qa_pair"],
 ): Promise<RetrievalResult> {
   const client = getQdrantClient();
   const collection = await getLiveCollection();
-
-  let t0 = performance.now();
-  const englishQuery = await translateToEnglish(query, lang);
-  const translateMs = performance.now() - t0;
-
   const qfilter = buildFilter(lang, chunkTypes);
 
-  t0 = performance.now();
+  const t0 = performance.now();
   const result = await client.query(collection, {
-    prefetch: [
-      {
-        // no `using` — targets the default/unnamed dense vector
-        query: { text: englishQuery, model: MINILM_INFERENCE_MODEL },
-        filter: qfilter,
-        limit: topK * 4,
-      },
-      {
-        query: { text: query, model: BM25_INFERENCE_MODEL },
-        using: SPARSE_VECTOR_NAME,
-        filter: qfilter,
-        limit: topK * 4,
-      },
-    ],
-    query: { fusion: "rrf" },
+    query: { text: e5QueryText(query), model: DENSE_INFERENCE_MODEL },
+    filter: qfilter,
     limit: topK * 4,
     with_payload: true,
   });
@@ -98,5 +78,5 @@ export async function retrieve(
     };
   });
 
-  return { docs: dedupe(docs, topK), timing: { translateMs, qdrantQueryMs } };
+  return { docs: dedupe(docs, topK), timing: { qdrantQueryMs } };
 }

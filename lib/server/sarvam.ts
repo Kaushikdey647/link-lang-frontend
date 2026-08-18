@@ -1,9 +1,8 @@
 import "server-only";
 
 /**
- * Thin fetch wrappers around Sarvam's REST API — ports stt.py and the
- * translate call in pipeline/query_engines.py. Contracts confirmed directly
- * against docs.sarvam.ai (not guessed) — see CHANGELOG.md.
+ * Thin fetch wrappers around Sarvam's REST API — STT and text LID.
+ * Contracts confirmed against docs.sarvam.ai — see CHANGELOG.md.
  *
  * Chat completions (generation) go through the AI SDK Sarvam provider
  * instead (./sarvam-provider.ts) — see lib/server/rag.ts.
@@ -90,33 +89,6 @@ export async function identifyLanguage(text: string): Promise<string> {
   } catch {
     return "hi";
   }
-}
-
-// BCP-47 codes for Sarvam's API — mirrors pipeline/query_engines.py::_SARVAM_LANG.
-const SARVAM_LANG: Record<string, string> = {
-  hi: "hi-IN", bn: "bn-IN", gu: "gu-IN", kn: "kn-IN",
-  ml: "ml-IN", mr: "mr-IN", ne: "ne-IN", or: "od-IN",
-  pa: "pa-IN", sa: "sa-IN", ta: "ta-IN", te: "te-IN",
-  ur: "ur-IN", as: "as-IN",
-};
-
-/** Translate a vernacular query to English (used for the english-pivot dense search). */
-export async function translateToEnglish(text: string, lang: string): Promise<string> {
-  const res = await sarvamFetch("/translate", {
-    method: "POST",
-    headers: {
-      "api-subscription-key": SARVAM_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      input: text,
-      source_language_code: SARVAM_LANG[lang] ?? "auto",
-      target_language_code: "en-IN",
-      model: "sarvam-translate:v1",
-    }),
-  });
-  const data = await res.json();
-  return data.translated_text ?? text;
 }
 
 // Chat completions (generation) now go through the AI SDK Sarvam provider

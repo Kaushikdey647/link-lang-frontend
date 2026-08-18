@@ -19,15 +19,19 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 const QDRANT_URL = process.env.QDRANT_CLUSTER_ENDPOINT || "http://localhost:6333";
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
 
-// Matches pipeline/indexer.py's MINILM_INFERENCE_MODEL/BM25_INFERENCE_MODEL —
-// exact Qdrant Cloud inference model registry identifiers, casing matters.
-export const MINILM_INFERENCE_MODEL = "sentence-transformers/all-minilm-l6-v2";
-export const BM25_INFERENCE_MODEL = "qdrant/bm25";
-export const SPARSE_VECTOR_NAME = "bm25";
+if (!process.env.QDRANT_EMBEDDING_MODEL) {
+  throw new Error("QDRANT_EMBEDDING_MODEL is not set (see .env.local)");
+}
+if (!process.env.QDRANT_COLLECTION_NAME) {
+  throw new Error("QDRANT_COLLECTION_NAME is not set (see .env.local)");
+}
 
-// IndexPlan(backend="english", chunkers=["english_query"], split="train").collection_name
-// — the one supported plan (see CHANGELOG.md's single-strategy collapse).
-export const COLLECTION_NAME = "msmarco_xi__english__english_query__train";
+// Dense embedding model — exact Qdrant Cloud inference model registry
+// identifier, casing matters. Serving is multilingual-e5-small + qa_pair
+// (see pipeline/indexer.py::E5_SMALL_INFERENCE_MODEL).
+export const DENSE_INFERENCE_MODEL = process.env.QDRANT_EMBEDDING_MODEL;
+
+export const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME;
 
 let client: QdrantClient | null = null;
 
