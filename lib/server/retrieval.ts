@@ -28,8 +28,43 @@ export interface RetrievalResult {
   timing: RetrievalTiming;
 }
 
+type CacheEntry = {
+  expiresAt: number;
+  result: RetrievalResult;
+};
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHE_SIZE = 200;
+const retrievalCache = new Map<string, CacheEntry>();
+
 function e5QueryText(query: string): string {
   return `query: ${query}`;
+}
+
+function cacheKey(query: string, lang: string, topK: number, chunkTypes: string[]): string {
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
+  return `${lang}::${topK}::${chunkTypes.slice().sort().join(",")}::${normalized}`;
+}
+
+function getCached(key: string): RetrievalResult | null {
+  const hit = retrievalCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt < Date.now()) {
+    retrievalCache.delete(key);
+    return null;
+  }
+  return {
+    docs: hit.result.docs,
+    timing: { qdrantQueryMs: 0 },
+  };
+}
+
+function setCached(key: string, result: RetrievalResult): void {
+  if (retrievalCache.size >= MAX_CACHE_SIZE) {
+    const oldest = retrievalCache.keys().next().value as string | undefined;
+    if (oldest) retrievalCache.delete(oldest);
+  }
+  retrievalCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, result });
 }
 
 function dedupe(hits: RetrievedDoc[], topK: number): RetrievedDoc[] {
@@ -57,6 +92,10 @@ export async function retrieve(
   topK: number,
   chunkTypes: string[] = ["qa_pair"],
 ): Promise<RetrievalResult> {
+  const key = cacheKey(query, lang, topK, chunkTypes);
+  const cached = getCached(key);
+  if (cached) return cached;
+
   const client = getQdrantClient();
   const collection = await getLiveCollection();
   const qfilter = buildFilter(lang, chunkTypes);
@@ -65,8 +104,12 @@ export async function retrieve(
   const result = await client.query(collection, {
     query: { text: e5QueryText(query), model: DENSE_INFERENCE_MODEL },
     filter: qfilter,
-    limit: topK * 4,
-    with_payload: true,
+    // Keep ANN candidate count tight to cut retrieval RTT.
+    limit: topK,
+    // Return only fields the prompt/citations actually use.
+    with_payload: {
+      include: ["page_content", "metadata"],
+    },
   });
   const qdrantQueryMs = performance.now() - t0;
 
@@ -78,5 +121,7 @@ export async function retrieve(
     };
   });
 
-  return { docs: dedupe(docs, topK), timing: { qdrantQueryMs } };
+  const retrievalResult = { docs: dedupe(docs, topK), timing: { qdrantQueryMs } };
+  setCached(key, retrievalResult);
+  return retrievalResult;
 }
