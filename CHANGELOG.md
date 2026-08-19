@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed — docs/UI leftovers from the retired translate path
+- Removed dead `translate_ms` stage label from `AnswerDisplay.tsx` and the unused field from `lib/api.ts` Latency type (server never emitted it after the e5/qa_pair cutover).
+
 ### Changed — serving uses multilingual-e5-small + qa_pair retrieval
 - `lib/server/retrieval.ts` now dense-queries the vernacular text with `query: ` prefix against `intfloat/multilingual-e5-small` (Qdrant Cloud inference). English-pivot MiniLM+BM25 RRF and the Sarvam translate hop are gone from the serving path.
 - Defaults: `chunkTypes=["qa_pair"]`, collection `msmarco_xi__multilingual_e5_small__qa_pair__train` (`QDRANT_COLLECTION_NAME`), model `QDRANT_EMBEDDING_MODEL`. Citations/LLM context still use `parent_passage`.
+- End-to-end path: STT → vernacular e5 embed + Qdrant retrieve → Sarvam-105B generate (input refusal in system prompt; lexical grounding post-stream). No translation.
 
 ### Changed — Streamed generation via Vercel AI SDK, guardrail folded into the system prompt
 Real production numbers (STT 1.8s, input guardrail 906ms, translate 381ms, Qdrant retrieval 665ms, generation 7.9s, grounding 3ms) showed generation dominating end-to-end latency, ~94% of it Sarvam-API-bound. Three changes address this:

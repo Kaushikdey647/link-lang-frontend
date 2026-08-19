@@ -25,7 +25,6 @@ function fmtDuration(ms: number): string {
 const STAGE_LABELS: Array<[key: keyof LatencyData, label: string]> = [
   ["stt_ms", "Speech-to-text"],
   ["lid_ms", "Language detection"],
-  ["translate_ms", "Translate (Sarvam)"],
   ["qdrant_query_ms", "Qdrant retrieval"],
   ["generation_ms", "Generation (Sarvam-105B, streamed)"],
   ["grounding_guardrail_ms", "Grounding guardrail"],

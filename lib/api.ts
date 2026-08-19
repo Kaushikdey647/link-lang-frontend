@@ -26,8 +26,6 @@ export interface Guardrails {
 export interface Latency {
   stt_ms?: number;
   lid_ms?: number;
-  input_guardrail_ms?: number;
-  translate_ms?: number;
   qdrant_query_ms?: number;
   generation_ms?: number;
   grounding_guardrail_ms?: number;

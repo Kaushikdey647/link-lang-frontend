@@ -40,7 +40,9 @@ export async function POST(req: NextRequest) {
   }
 
   const topK: number = body?.topK ?? 5;
-  const chunkTypes: string[] | undefined = body?.chunkTypes;
+  // Serving strategy is fixed to qa_pair retrieval (vernacular dense e5).
+  // Ignore request-level overrides so callers cannot drift to legacy chunkers.
+  const chunkTypes: string[] = ["qa_pair"];
   let lang: string | undefined = body?.lang;
   const latency: Record<string, number> = {};
   // Voice path times STT client-side (before this request even starts) and
