@@ -24,7 +24,6 @@ function fmtDuration(ms: number): string {
 // it streams to the client and is no longer counted as blocking latency.
 const STAGE_LABELS: Array<[key: keyof LatencyData, label: string]> = [
   ["stt_ms", "Speech-to-text"],
-  ["lid_ms", "Language detection"],
   ["qdrant_query_ms", "Qdrant retrieval"],
   ["generation_ms", "Generation (Sarvam-105B, streamed)"],
   ["grounding_guardrail_ms", "Grounding guardrail"],
@@ -55,18 +54,18 @@ export default function AnswerDisplay({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: "easeOut" }}
-      className="w-full max-w-xl mx-auto flex flex-col gap-4 px-2"
+      className="mx-auto flex w-full max-w-xl flex-col gap-4 px-1 sm:px-2"
     >
       {/* Transcript */}
       {transcript && (
-        <p className="text-white/40 text-sm text-center tracking-wide">
+        <p className="text-center text-xs tracking-wide text-white/40 sm:text-sm">
           &ldquo;{transcript}&rdquo;
         </p>
       )}
 
       {/* Answer */}
-      <div className="rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm px-6 py-5">
-        <p className="text-white/90 text-base leading-relaxed whitespace-pre-wrap">
+      <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 backdrop-blur-sm sm:px-6 sm:py-5">
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/90 sm:text-base">
           {displayAnswer}
           {streaming && <span className="inline-block w-1.5 h-4 ml-0.5 bg-white/50 animate-pulse align-text-bottom" />}
         </p>
@@ -81,7 +80,7 @@ export default function AnswerDisplay({
       {/* Timing + sources + latency-breakdown toggles */}
       {(totalMs !== undefined || passages.length > 0) && (
         <div>
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5">
             {totalMs !== undefined && (
               stages.length > 0 ? (
                 <button
@@ -114,13 +113,13 @@ export default function AnswerDisplay({
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
               transition={{ duration: 0.2 }}
-              className="overflow-hidden mt-3 rounded-xl border border-white/8 bg-white/3 px-4 py-3"
+              className="mt-3 overflow-hidden rounded-xl border border-white/8 bg-white/3 px-3 py-3 sm:px-4"
             >
               <div className="flex flex-col gap-1.5">
                 {stages.map(([key, label]) => (
-                  <div key={key} className="flex items-center justify-between text-xs">
+                  <div key={key} className="flex items-center justify-between gap-3 text-xs">
                     <span className="text-white/40">{label}</span>
-                    <span className="text-white/60 font-mono">{fmtDuration(latency![key]!)}</span>
+                    <span className="font-mono text-white/60">{fmtDuration(latency![key]!)}</span>
                   </div>
                 ))}
                 <div className="flex items-center justify-between text-xs pt-1.5 mt-1 border-t border-white/8">
@@ -138,12 +137,12 @@ export default function AnswerDisplay({
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
               transition={{ duration: 0.2 }}
-              className="overflow-hidden mt-3 flex flex-col gap-2"
+              className="mt-3 flex flex-col gap-2 overflow-hidden"
             >
               {passages.map((p) => (
                 <div
                   key={p.passageId ?? p.index}
-                  className="rounded-xl border border-white/8 bg-white/3 px-4 py-3 text-xs text-white/50 leading-relaxed"
+                  className="rounded-xl border border-white/8 bg-white/3 px-3 py-3 text-xs leading-relaxed text-white/50 sm:px-4"
                 >
                   <span className="text-white/25 font-mono mr-2">[{p.index + 1}]</span>
                   {p.isSelected && <span className="mr-2 text-white/40">★</span>}

@@ -21,11 +21,9 @@ export interface Guardrails {
   grounding_reason: string;
 }
 
-// Per-stage server latency (ms). stt_ms only present for /api/voice, lid_ms
-// only present when language was auto-detected instead of passed explicitly.
+// Per-stage server latency (ms). stt_ms is passed from /api/voice.
 export interface Latency {
   stt_ms?: number;
-  lid_ms?: number;
   qdrant_query_ms?: number;
   generation_ms?: number;
   grounding_guardrail_ms?: number;

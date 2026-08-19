@@ -7,7 +7,6 @@ import { DefaultChatTransport } from "ai";
 import MicButton from "@/components/MicButton";
 import WaveformBars from "@/components/WaveformBars";
 import AnswerDisplay from "@/components/AnswerDisplay";
-import TextInput from "@/components/TextInput";
 import { useVoice } from "@/hooks/useVoice";
 import { useHealth } from "@/hooks/useHealth";
 import { transcribeVoice } from "@/lib/api";
@@ -53,7 +52,6 @@ export default function Home() {
   const [uiState, setUiState] = useState<UIState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [seconds, setSeconds] = useState(0);
-  const [showText, setShowText] = useState(false);
   const [transcript, setTranscript] = useState<string | undefined>();
   const [detectedLang, setDetectedLang] = useState<string | undefined>();
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -144,18 +142,6 @@ export default function Home() {
     }
   }, [uiState, voice]);
 
-  const handleText = useCallback(
-    (text: string) => {
-      setShowText(false);
-      setMessages([]);
-      setTranscript(undefined);
-      setDetectedLang(undefined);
-      setErrorMsg("");
-      sendMessage({ text });
-    },
-    [sendMessage, setMessages],
-  );
-
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const health       = useHealth();
@@ -165,15 +151,15 @@ export default function Home() {
   const backendReady = health === "ready";
 
   return (
-    <div className="relative flex flex-col h-screen overflow-hidden bg-[#0d0d0d] text-white select-none">
+    <div className="relative flex flex-col min-h-dvh overflow-hidden bg-[#0d0d0d] text-white select-none">
 
       {/* Ambient glow */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-        <div className="w-[500px] h-[500px] rounded-full bg-white/[0.02] blur-3xl" />
+        <div className="h-[320px] w-[320px] rounded-full bg-white/[0.02] blur-3xl sm:h-[420px] sm:w-[420px] md:h-[500px] md:w-[500px]" />
       </div>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header className="relative z-10 flex items-center justify-between px-6 pt-8 pb-2">
+      <header className="relative z-10 flex items-center justify-between px-4 pb-2 pt-6 sm:px-6 sm:pt-8">
         <div className="flex flex-col gap-1">
           <span className="text-xs text-white/30 tracking-[0.2em] uppercase">Bhasha</span>
           <div className="flex items-center gap-1.5">
@@ -197,7 +183,7 @@ export default function Home() {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
-              className="text-xs text-white/30 bg-white/5 border border-white/10 rounded-full px-3 py-1 tracking-wide"
+              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] tracking-wide text-white/30 sm:px-3 sm:text-xs"
             >
               {LANG_NAMES[detectedLang] ?? detectedLang}
             </motion.div>
@@ -206,14 +192,14 @@ export default function Home() {
       </header>
 
       {/* ── Main — state-specific center content ────────────────────────────── */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 px-6 py-4 overflow-y-auto">
+      <main className="relative z-10 flex flex-1 flex-col items-center justify-center gap-5 overflow-y-auto px-4 py-4 sm:gap-6 sm:px-6">
         <AnimatePresence mode="wait">
 
           {/* idle */}
           {uiState === "idle" && (
-            <motion.div key="idle" {..._fade} className="flex flex-col items-center gap-3 text-center">
+            <motion.div key="idle" {..._fade} className="flex flex-col items-center gap-3 px-2 text-center">
               <WaveformBars bars={11} active={false} className="mb-2" />
-              <p className="text-white/25 text-sm tracking-wide">
+              <p className="text-xs tracking-wide text-white/25 sm:text-sm">
                 Speak in any of 14 Indian languages
               </p>
             </motion.div>
@@ -221,16 +207,16 @@ export default function Home() {
 
           {/* recording — live transcript */}
           {uiState === "recording" && (
-            <motion.div key="recording" {..._fade} className="flex flex-col items-center gap-4 w-full max-w-sm px-4 text-center">
+            <motion.div key="recording" {..._fade} className="flex w-full max-w-sm flex-col items-center gap-4 px-3 text-center sm:px-4">
               <AnimatePresence mode="wait">
                 {voice.liveTranscript ? (
                   <motion.p key="words" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    className="text-white/75 text-base leading-relaxed">
+                    className="text-sm leading-relaxed text-white/75 sm:text-base">
                     {voice.liveTranscript}
                   </motion.p>
                 ) : (
                   <motion.p key="hint" initial={{ opacity: 0 }} animate={{ opacity: 0.35 }}
-                    className="text-sm tracking-widest">
+                    className="text-xs tracking-widest sm:text-sm">
                     Listening…
                   </motion.p>
                 )}
@@ -263,9 +249,9 @@ export default function Home() {
           {/* error */}
           {uiState === "error" && (
             <motion.div key="error" {..._fade}
-              className="rounded-2xl bg-white/5 border border-white/10 px-6 py-5 max-w-sm text-center flex flex-col gap-2">
-              <p className="text-white/50 text-sm">{errorMsg}</p>
-              <p className="text-white/20 text-xs tracking-wide">
+              className="flex max-w-sm flex-col gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-center sm:px-6 sm:py-5">
+              <p className="text-sm text-white/50">{errorMsg}</p>
+              <p className="text-[11px] tracking-wide text-white/20 sm:text-xs">
                 {backendReady ? "Tap the mic to try again" : "Waiting for backend…"}
               </p>
             </motion.div>
@@ -275,7 +261,7 @@ export default function Home() {
       </main>
 
       {/* ── Bottom controls ─────────────────────────────────────────────────── */}
-      <div className="relative z-10 flex flex-col items-center gap-4 px-6 pb-10 pt-2">
+      <div className="relative z-10 flex flex-col items-center gap-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 sm:gap-4 sm:px-6 sm:pb-10">
 
         {/* Recording: timer + waveform */}
         <AnimatePresence>
@@ -312,25 +298,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Text input — secondary */}
-        <div className="w-full max-w-sm">
-          {!showText ? (
-            <button
-              onClick={() => setShowText(true)}
-              className="w-full text-center text-xs text-white/20 hover:text-white/40 transition-colors tracking-widest py-1"
-            >
-              type instead
-            </button>
-          ) : (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              <TextInput
-                onSend={handleText}
-                disabled={isRecording || isProcessing}
-                placeholder="Type in any Indian language…"
-              />
-            </motion.div>
-          )}
-        </div>
+        <p className="text-[11px] tracking-wide text-white/20 sm:text-xs">Voice-only mode (STT)</p>
 
       </div>
     </div>

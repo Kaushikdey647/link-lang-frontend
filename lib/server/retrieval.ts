@@ -1,4 +1,5 @@
 import "server-only";
+import { trace } from "@opentelemetry/api";
 import {
   getQdrantClient,
   getLiveCollection,
@@ -36,6 +37,7 @@ type CacheEntry = {
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHE_SIZE = 200;
 const retrievalCache = new Map<string, CacheEntry>();
+const tracer = trace.getTracer("link-lang.retrieval");
 
 function e5QueryText(query: string): string {
   return `query: ${query}`;
@@ -92,36 +94,59 @@ export async function retrieve(
   topK: number,
   chunkTypes: string[] = ["qa_pair"],
 ): Promise<RetrievalResult> {
-  const key = cacheKey(query, lang, topK, chunkTypes);
-  const cached = getCached(key);
-  if (cached) return cached;
+  return tracer.startActiveSpan("rag.retrieve", async (span) => {
+    span.setAttribute("rag.lang", lang);
+    span.setAttribute("rag.top_k", topK);
+    span.setAttribute("rag.chunk_types", chunkTypes.join(","));
+    span.setAttribute("rag.embedding_model", DENSE_INFERENCE_MODEL);
+    try {
+      const key = cacheKey(query, lang, topK, chunkTypes);
+      const cached = getCached(key);
+      if (cached) {
+        span.setAttribute("rag.cache_hit", true);
+        span.setAttribute("rag.qdrant_query_ms", 0);
+        span.setAttribute("rag.docs_count", cached.docs.length);
+        return cached;
+      }
 
-  const client = getQdrantClient();
-  const collection = await getLiveCollection();
-  const qfilter = buildFilter(lang, chunkTypes);
+      span.setAttribute("rag.cache_hit", false);
+      const client = getQdrantClient();
+      const collection = await getLiveCollection();
+      const qfilter = buildFilter(lang, chunkTypes);
+      span.setAttribute("rag.collection", collection);
 
-  const t0 = performance.now();
-  const result = await client.query(collection, {
-    query: { text: e5QueryText(query), model: DENSE_INFERENCE_MODEL },
-    filter: qfilter,
-    // Keep ANN candidate count tight to cut retrieval RTT.
-    limit: topK,
-    // Return only fields the prompt/citations actually use.
-    with_payload: {
-      include: ["page_content", "metadata"],
-    },
+      const t0 = performance.now();
+      const result = await client.query(collection, {
+        query: { text: e5QueryText(query), model: DENSE_INFERENCE_MODEL },
+        filter: qfilter,
+        // Keep ANN candidate count tight to cut retrieval RTT.
+        limit: topK,
+        // Return only fields the prompt/citations actually use.
+        with_payload: {
+          include: ["page_content", "metadata"],
+        },
+      });
+      const qdrantQueryMs = performance.now() - t0;
+
+      const docs: RetrievedDoc[] = result.points.map((p) => {
+        const payload = (p.payload ?? {}) as Record<string, unknown>;
+        return {
+          pageContent: (payload.page_content as string) ?? "",
+          metadata: (payload.metadata as Record<string, unknown>) ?? {},
+        };
+      });
+
+      const retrievalResult = { docs: dedupe(docs, topK), timing: { qdrantQueryMs } };
+      setCached(key, retrievalResult);
+      span.setAttribute("rag.qdrant_query_ms", qdrantQueryMs);
+      span.setAttribute("rag.docs_count", retrievalResult.docs.length);
+      return retrievalResult;
+    } catch (error) {
+      span.recordException(error as Error);
+      span.setAttribute("rag.error", true);
+      throw error;
+    } finally {
+      span.end();
+    }
   });
-  const qdrantQueryMs = performance.now() - t0;
-
-  const docs: RetrievedDoc[] = result.points.map((p) => {
-    const payload = (p.payload ?? {}) as Record<string, unknown>;
-    return {
-      pageContent: (payload.page_content as string) ?? "",
-      metadata: (payload.metadata as Record<string, unknown>) ?? {},
-    };
-  });
-
-  const retrievalResult = { docs: dedupe(docs, topK), timing: { qdrantQueryMs } };
-  setCached(key, retrievalResult);
-  return retrievalResult;
 }

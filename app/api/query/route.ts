@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { trace } from "@opentelemetry/api";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -7,11 +8,11 @@ import {
 } from "ai";
 import { sarvamChatModel } from "@/lib/server/sarvam-provider";
 import { prepareGeneration, finalizeGeneration } from "@/lib/server/rag";
-import { identifyLanguage } from "@/lib/server/sarvam";
 
-/** Streaming port of POST /query. Body: `{ messages, lang?, topK?, chunkTypes? }`
+/** Streaming port of POST /query. Body: `{ messages, lang, topK?, chunkTypes? }`
  * — the shape @ai-sdk/react's useChat sends (messages) plus our own custom
  * per-request fields (lang/topK/chunkTypes) passed via sendMessage's second arg. */
+const tracer = trace.getTracer("link-lang.api.query");
 
 function lastUserText(messages: UIMessage[]): string {
   const last = messages[messages.length - 1];
@@ -43,20 +44,35 @@ export async function POST(req: NextRequest) {
   // Serving strategy is fixed to qa_pair retrieval (vernacular dense e5).
   // Ignore request-level overrides so callers cannot drift to legacy chunkers.
   const chunkTypes: string[] = ["qa_pair"];
-  let lang: string | undefined = body?.lang;
+  const lang = typeof body?.lang === "string" ? body.lang.trim() : "";
   const latency: Record<string, number> = {};
   // Voice path times STT client-side (before this request even starts) and
   // passes it through so the server-computed total stays end-to-end accurate.
   if (typeof body?.sttMs === "number") latency.stt_ms = body.sttMs;
 
-  try {
-    if (!lang) {
-      const t0 = performance.now();
-      lang = await identifyLanguage(query);
-      latency.lid_ms = performance.now() - t0;
-    }
+  if (!lang) {
+    return new Response(JSON.stringify({ detail: "lang is required (STT-only mode)" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
-    const prepared = await prepareGeneration(query, { lang, topK, chunkTypes });
+  try {
+    const prepared = await tracer.startActiveSpan("rag.prepare_generation", async (span) => {
+      try {
+        const preparedResult = await prepareGeneration(query, { lang, topK, chunkTypes });
+        span.setAttribute("rag.lang", lang);
+        span.setAttribute("rag.top_k", topK);
+        span.setAttribute("rag.passages_count", preparedResult.passages.length);
+        span.setAttribute("rag.qdrant_query_ms", preparedResult.latency.qdrant_query_ms ?? 0);
+        return preparedResult;
+      } catch (error) {
+        span.recordException(error as Error);
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
     Object.assign(latency, prepared.latency);
 
     const stream = createUIMessageStream({
@@ -98,10 +114,21 @@ export async function POST(req: NextRequest) {
         }
 
         const genT0 = performance.now();
-        const result = streamText({
-          model: sarvamChatModel,
-          system: prepared.system,
-          prompt: prepared.prompt,
+        const result = await tracer.startActiveSpan("rag.start_generation_stream", async (span) => {
+          try {
+            span.setAttribute("rag.lang", lang);
+            span.setAttribute("rag.prompt_chars", prepared.prompt.length);
+            return streamText({
+              model: sarvamChatModel,
+              system: prepared.system,
+              prompt: prepared.prompt,
+            });
+          } catch (error) {
+            span.recordException(error as Error);
+            throw error;
+          } finally {
+            span.end();
+          }
         });
 
         // Consume result.textStream ourselves (instead of merging
@@ -113,24 +140,49 @@ export async function POST(req: NextRequest) {
         // silently vanish. Writing everything before `execute()` resolves
         // guarantees it lands inside the same message.
         writer.write({ type: "text-start", id: "answer" });
-        let text = "";
-        try {
-          for await (const delta of result.textStream) {
-            text += delta;
-            writer.write({ type: "text-delta", id: "answer", delta });
+        const generation = await tracer.startActiveSpan("rag.stream_generation", async (span) => {
+          let text = "";
+          let chunks = 0;
+          try {
+            for await (const delta of result.textStream) {
+              text += delta;
+              chunks += 1;
+              writer.write({ type: "text-delta", id: "answer", delta });
+            }
+          } catch (e) {
+            writer.write({
+              type: "text-delta",
+              id: "answer",
+              delta: `\n\n(Generation failed: ${e})`,
+            });
+            span.recordException(e as Error);
+          } finally {
+            const generationMs = performance.now() - genT0;
+            span.setAttribute("rag.generation_ms", generationMs);
+            span.setAttribute("rag.generated_chars", text.length);
+            span.setAttribute("rag.stream_chunks", chunks);
+            span.end();
           }
-        } catch (e) {
-          writer.write({
-            type: "text-delta",
-            id: "answer",
-            delta: `\n\n(Generation failed: ${e})`,
-          });
-        }
+          return { text };
+        });
         writer.write({ type: "text-end", id: "answer" });
 
         latency.generation_ms = performance.now() - genT0;
+        const text = generation.text;
         const groundT0 = performance.now();
-        const finalized = finalizeGeneration(text, prepared.docs);
+        const finalized = await tracer.startActiveSpan("rag.grounding_guardrail", async (span) => {
+          try {
+            const result = finalizeGeneration(text, prepared.docs);
+            span.setAttribute("rag.input_guardrail_passed", result.inputGuardrail.passed);
+            span.setAttribute("rag.grounding_guardrail_passed", result.groundingGuardrail.passed);
+            return result;
+          } catch (error) {
+            span.recordException(error as Error);
+            throw error;
+          } finally {
+            span.end();
+          }
+        });
         latency.grounding_guardrail_ms = performance.now() - groundT0;
         latency.total_ms = sumExcludingGeneration(latency);
 

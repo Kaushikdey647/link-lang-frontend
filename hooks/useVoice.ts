@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 
 /**
  * Owns MediaRecorder + Web Speech API (live transcript only).
- * Language detection happens server-side via saaras:v3 — no lang param needed.
+ * Language detection comes from server-side STT (saaras:v3 via /api/voice).
  * Web Speech API uses browser locale as a best-effort hint for live captions.
  */
 export function useVoice(onResult: (blob: Blob) => void) {

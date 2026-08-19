@@ -24,8 +24,8 @@ export default function MicButton({ isRecording, onToggle, disabled }: Props) {
               <motion.div
                 key={i}
                 className="absolute rounded-full border border-white/20"
-                initial={{ width: 88, height: 88, opacity: 0.55 }}
-                animate={{ width: 88 + (i + 1) * 42, height: 88 + (i + 1) * 42, opacity: 0 }}
+                initial={{ width: 76, height: 76, opacity: 0.55 }}
+                animate={{ width: 76 + (i + 1) * 36, height: 76 + (i + 1) * 36, opacity: 0 }}
                 transition={{ duration: 1.6, repeat: Infinity, delay: i * 0.55, ease: "easeOut" }}
               />
             ))}
@@ -39,7 +39,7 @@ export default function MicButton({ isRecording, onToggle, disabled }: Props) {
         disabled={disabled}
         aria-label={isRecording ? "Stop recording" : "Start recording"}
         className={`
-          relative z-10 w-[88px] h-[88px] rounded-full
+          relative z-10 h-[76px] w-[76px] rounded-full sm:h-[88px] sm:w-[88px]
           flex items-center justify-center
           transition-colors duration-300 shadow-2xl
           disabled:opacity-30 disabled:cursor-not-allowed
@@ -54,8 +54,8 @@ export default function MicButton({ isRecording, onToggle, disabled }: Props) {
           transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
         >
           {isRecording
-            ? <Square size={24} className="text-white" fill="white" />
-            : <Mic   size={26} className="text-white" />
+            ? <Square size={20} className="text-white sm:size-6" fill="white" />
+            : <Mic size={22} className="text-white sm:size-[26px]" />
           }
         </motion.div>
       </motion.button>
